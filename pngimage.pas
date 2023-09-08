@@ -457,7 +457,7 @@ type
     procedure InitializeGamma;
   private
     {Canvas}
-    {$IFDEF UseDelphi}fCanvas: TCanvas;{$ENDIF}
+    // {$IFDEF UseDelphi}fCanvas: TCanvas;{$ENDIF}
     {Filters to test to encode}
     fFilters: TFilters;
     {Compression level for ZLIB}
@@ -550,7 +550,7 @@ type
     procedure DrawUsingPixelInformation(Canvas: TCanvas; Point: TPoint);
 
     {Canvas}
-    {$IFDEF UseDelphi}property Canvas: TCanvas read fCanvas;{$ENDIF}
+    // {$IFDEF UseDelphi}property Canvas: TCanvas read fCanvas;{$ENDIF}
     {Returns pointer to the header}
     property Header: TChunkIHDR read GetHeader;
     {Returns the transparency mode used by this png}
@@ -1364,56 +1364,60 @@ function DecompressZLIB(const Input: Pointer; InputSize: Integer;
   var ErrorOutput: String): Boolean;
 var
   StreamRec : TZStreamRec;
-  Buffer    : Array[Byte] of Byte;
   InflateRet: Integer;
 begin
-  with StreamRec do
-  begin
-    {Initializes}
-    Result := True;
-    OutputSize := 0;
+  {Initializes}
+  Result := False;
+  Output := nil;
+  OutputSize := 0;
 
-    {Prepares the data to decompress}
-    FillChar(StreamRec, SizeOf(TZStreamRec), #0);
-    InflateInit_(StreamRec, zlib_version, SIZEOF(TZStreamRec));
+  {Input checking}
+  if (Input = nil) or (InputSize = 0) then
+  begin
+    ErrorOutput := 'Input error.';
+    Exit;
+  end;
+
+  {Decompress}
+  FillChar(StreamRec, SizeOf(TZStreamRec), #0);
+  InflateInit_(StreamRec, zlib_version, SIZEOF(TZStreamRec));
+  with StreamRec do
+  try
     next_in := Input;
     avail_in := InputSize;
 
-    {Decodes data}
     repeat
-      {In case it needs an output buffer}
-      if (avail_out = 0) then
+      {When it needs new buffer to stores the compressed data}
+      if avail_out = 0 then
       begin
-        next_out := @Buffer;
-        avail_out := SizeOf(Buffer);
-      end {if (avail_out = 0)};
-
-      {Decompress and put in output}
-      InflateRet := inflate(StreamRec, 0);
-      if (InflateRet = Z_STREAM_END) or (InflateRet = 0) then
-      begin
-        {Reallocates output buffer}
-        inc(OutputSize, total_out);
         if Output = nil then
-          GetMem(Output, OutputSize) else ReallocMem(Output, OutputSize);
-        {Copies the new data}
-        CopyMemory(Ptr(Longint(Output) + OutputSize - total_out),
-          @Buffer, total_out);
-      end {if (InflateRet = Z_STREAM_END) or (InflateRet = 0)}
-      {Now tests for errors}
-      else if InflateRet < 0 then
-      begin
-        Result := False;
-        ErrorOutput := StreamRec.msg;
-        InflateEnd(StreamRec);
-        Exit;
-      end {if InflateRet < 0}
-    until InflateRet = Z_STREAM_END;
+          GetMem(Output, $1000)
+        else
+          ReallocMem(Output, total_out + $1000);
+        next_out := Ptr(LongInt(Output) + total_out);
+        avail_out := $1000;
+      end;
+      InflateRet := inflate(StreamRec, 0);
+    until (InflateRet = Z_STREAM_END) or (InflateRet < 0);
 
-    {Terminates decompression}
+    {Success}
+    if InflateRet = Z_STREAM_END then
+    begin
+      OutputSize := total_out;
+      Result := True;
+    end
+
+    {Error}
+    else if InflateRet < 0 then
+    begin
+      ErrorOutput := StreamRec.msg;
+      FreeMem(Output);
+      Output := nil;
+      OutputSize := 0;
+    end;
+  finally
     InflateEnd(StreamRec);
-  end {with StreamRec}
-
+  end;
 end;
 
 {Compresses ZLIB into a memory address}
@@ -1422,59 +1426,60 @@ function CompressZLIB(Input: Pointer; InputSize, CompressionLevel: Integer;
   var ErrorOutput: String): Boolean;
 var
   StreamRec : TZStreamRec;
-  Buffer    : Array[Byte] of Byte;
   DeflateRet: Integer;
 begin
-  with StreamRec do
-  begin
-    Result := True; {By default returns TRUE as everything might have gone ok}
-    OutputSize := 0; {Initialize}
-    {Prepares the data to compress}
-    FillChar(StreamRec, SizeOf(TZStreamRec), #0);
-    DeflateInit_(StreamRec, CompressionLevel,zlib_version, SIZEOF(TZStreamRec));
+  {Initializes}
+  Result := False;
+  Output := nil;
+  OutputSize := 0;
 
+  {Input checking}
+  if (Input = nil) or (InputSize = 0) then
+  begin
+    ErrorOutput := 'Input error.';
+    Exit;
+  end;
+
+  {Compress}
+  FillChar(StreamRec, SizeOf(TZStreamRec), #0);
+  DeflateInit_(StreamRec, CompressionLevel, zlib_version, SIZEOF(TZStreamRec));
+  with StreamRec do
+  try
     next_in := Input;
     avail_in := InputSize;
 
-    while avail_in > 0 do
-    begin
+    repeat
       {When it needs new buffer to stores the compressed data}
       if avail_out = 0 then
       begin
-        {Restore buffer}
-        next_out := @Buffer;
-        avail_out := SizeOf(Buffer);
-      end {if avail_out = 0};
-
-      {Compresses}
-      DeflateRet := deflate(StreamRec, Z_FINISH);
-
-      if (DeflateRet = Z_STREAM_END) or (DeflateRet = 0) then
-      begin
-        {Updates the output memory}
-        inc(OutputSize, total_out);
         if Output = nil then
-          GetMem(Output, OutputSize) else ReallocMem(Output, OutputSize);
+          GetMem(Output, $1000)
+        else
+          ReallocMem(Output, total_out + $1000);
+        next_out := Ptr(LongInt(Output) + total_out);
+        avail_out := $1000;
+      end;
+      DeflateRet := deflate(StreamRec, Z_FINISH);
+    until (DeflateRet = Z_STREAM_END) or (DeflateRet < 0);
 
-        {Copies the new data}
-        CopyMemory(Ptr(Longint(Output) + OutputSize - total_out),
-          @Buffer, total_out);
-      end {if (InflateRet = Z_STREAM_END) or (InflateRet = 0)}
-      {Now tests for errors}
-      else if DeflateRet < 0 then
-      begin
-        Result := False;
-        ErrorOutput := StreamRec.msg;
-        DeflateEnd(StreamRec);
-        Exit;
-      end {if InflateRet < 0}
+    {Success}
+    if DeflateRet = Z_STREAM_END then
+    begin
+      OutputSize := total_out;
+      Result := True;
+    end
 
-    end {while avail_in > 0};
-
-    {Finishes compressing}
+    {Error}
+    else if DeflateRet < 0 then
+    begin
+      ErrorOutput := StreamRec.msg;
+      FreeMem(Output);
+      Output := nil;
+      OutputSize := 0;
+    end;
+  finally
     DeflateEnd(StreamRec);
-  end {with StreamRec}
-
+  end;
 end;
 
 {TPngPointerList implementation}
@@ -2434,7 +2439,7 @@ begin
   {Creates the image to hold the data, CreateDIBSection does a better}
   {work in allocating necessary memory}
   ImageDC := CreateCompatibleDC(0);
-  {$IFDEF UseDelphi}Self.Owner.Canvas.Handle := ImageDC;{$ENDIF}
+  // {$IFDEF UseDelphi}Self.Owner.Canvas.Handle := ImageDC;{$ENDIF}
 
   {In case it is a palette image, create the palette}
   if HasPalette then
@@ -4471,7 +4476,7 @@ begin
   inherited Create;
 
   {Initial properties}
-  {$IFDEF UseDelphi}fCanvas := TCanvas.Create;{$ENDIF}
+  // {$IFDEF UseDelphi}fCanvas := TCanvas.Create;{$ENDIF}
   fFilters := [pfSub];
   fCompressionLevel := 7;
   fInterlaceMethod := imNone;
@@ -4487,8 +4492,8 @@ begin
   {Free object list}
   ClearChunks;
   fChunkList.Free;
-  {$IFDEF UseDelphi}if fCanvas <> nil then
-    fCanvas.Free;{$ENDIF}
+//  {$IFDEF UseDelphi}if fCanvas <> nil then
+//    fCanvas.Free;{$ENDIF}
 
   {Call ancestor destroy}
   inherited Destroy;
@@ -4806,7 +4811,17 @@ begin
           {Optmize when we don´t have transparency}
           if (AlphaSource[i2] <> 0) then
             if (AlphaSource[i2] = 255) then
-              ImageData[i] := pRGBQuad(@ImageSource[i2 * 3])^
+            // fix:
+            // if the top-right pixel (the last element in array) has no transparency
+            // prgbquad(imagesource[i2*3])^ is overflow with 1 byte
+              // ImageData[i] := pRGBQuad(@ImageSource[i2 * 3])^
+              with ImageData[i] do
+              begin
+                rgbRed := ImageSource[2+i2*3];
+                rgbGreen := ImageSource[1+i2*3];
+                rgbBlue := ImageSource[i2*3];
+              end
+            // fix end.
             else
               with ImageData[i] do
               begin
@@ -5196,7 +5211,9 @@ begin
   else if (Dest is TBitmap) and HeaderPresent then
   begin
     {Copies the handle using CopyImage API}
-    TBitmap(Dest).PixelFormat := DetectPixelFormat;
+    {Because this procedure doesn't copy palette to bitmap, it should lead to}
+    {a bad result,so disable the pixel format changing}
+    // TBitmap(Dest).PixelFormat := DetectPixelFormat;
     TBitmap(Dest).Width := Width;
     TBitmap(Dest).Height := Height;
     TBitmap(Dest).Canvas.Draw(0, 0, Self);
@@ -5279,27 +5296,47 @@ begin
 end;
 
 {Assigns from another PNG}
+// The original AssignPNG procedure loss color information for indexed mode png
+// images, so try to save to a memory stream and re-load it.
 procedure TPngObject.AssignPNG(Source: TPNGObject);
 var
-  J: Integer;
+  Stream: TMemoryStream;
 begin
-  {Copy properties}
-  InterlaceMethod := Source.InterlaceMethod;
-  MaxIdatSize := Source.MaxIdatSize;
-  CompressionLevel := Source.CompressionLevel;
-  Filters := Source.Filters;
+  if Source.Empty then
+  begin
+    ClearChunks;
+    Exit;
+  end;
 
-  {Clear old chunks and prepare}
-  ClearChunks();
-  Chunks.Count := Source.Chunks.Count;
-  {Create chunks and makes a copy from the source}
-  FOR J := 0 TO Chunks.Count - 1 DO
-    with Source.Chunks do
-    begin
-      Chunks.SetItem(J, TChunkClass(TChunk(Item[J]).ClassType).Create(Self));
-      TChunk(Chunks.Item[J]).Assign(TChunk(Item[J]));
-    end {with};
+  Stream := TMemoryStream.Create;
+  try
+    Source.SaveToStream(Stream);
+    Stream.Position := 0;
+    LoadFromStream(Stream);
+  finally
+    Stream.Free;
+  end;
 end;
+//var
+//  J: Integer;
+//begin
+//  {Copy properties}
+//  InterlaceMethod := Source.InterlaceMethod;
+//  MaxIdatSize := Source.MaxIdatSize;
+//  CompressionLevel := Source.CompressionLevel;
+//  Filters := Source.Filters;
+//
+//  {Clear old chunks and prepare}
+//  ClearChunks();
+//  Chunks.Count := Source.Chunks.Count;
+//  {Create chunks and makes a copy from the source}
+//  FOR J := 0 TO Chunks.Count - 1 DO
+//    with Source.Chunks do
+//    begin
+//      Chunks.SetItem(J, TChunkClass(TChunk(Item[J]).ClassType).Create(Self));
+//      TChunk(Chunks.Item[J]).Assign(TChunk(Item[J]));
+//    end {with};
+//end;
 
 {Returns a alpha data scanline}
 function TPngObject.GetAlphaScanline(const LineIndex: Integer): pByteArray;
@@ -5641,7 +5678,7 @@ begin
     NewHandle := CreateDIBSection(NewDC, pBitmapInfo(@Header.BitmapInfo)^,
       DIB_RGB_COLORS, NewImageData, 0, 0);
     SelectObject(NewDC, NewHandle);
-    {$IFDEF UseDelphi}Canvas.Handle := NewDC;{$ENDIF}
+    // {$IFDEF UseDelphi}Canvas.Handle := NewDC;{$ENDIF}
     NewBytesPerRow := (((Header.BitmapInfo.bmiHeader.biBitCount * cx) + 31)
       and not 31) div 8;
 
